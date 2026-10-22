@@ -10,6 +10,10 @@ Hold the **middle button and drag**:
 | Drag down | App Exposé (windows of the current app) |
 | Plain click | Replayed as a normal click |
 
+It also works as a free alternative to Logi Options+ for MX Master mice (MX Master 3S, MX Master 4, and others): the gesture button gives smoother
+Space switching than Options+ (the desktop follows your drag instead of jumping), and several MX Master models can be used on one Mac
+(see the per-device settings below).
+
 It synthesizes macOS's private "dock swipe" gesture events for the smooth
 horizontal Space animation, and uses the private `CoreDockSendNotification` for the
 vertical actions (which macOS 26 "Tahoe" no longer triggers via dock swipes).
