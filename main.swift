@@ -5,8 +5,7 @@ import IOKit.hid
 // Middle-button drag -> smooth Space / Mission Control switching.
 // Synthesizes macOS's private "dock swipe" gesture events (pre-macOS 27 CGEventField path).
 
-let dockActions = ["missioncontrol": "com.apple.expose.awake", "appexpose": "com.apple.expose.front.awake",
-                   "showdesktop": "com.apple.showdesktop.awake"]
+let dockActions = ["missioncontrol": "com.apple.expose.awake", "appexpose": "com.apple.expose.front.awake"]
 
 func untilComponents(_ text: String) -> DateComponents? {
     let parts = text.split(separator: ":").compactMap { Int($0) }

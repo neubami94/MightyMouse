@@ -75,7 +75,7 @@ missing from the file uses its default.
 | `verticalFireThreshold` | Vertical drag before up/down fires, in pixels | Positive number | `30.0` |
 | `scaleH` | Horizontal sensitivity of the Space animation | Positive number | `1.0 / (screenWidth + 100.0)` |
 | `logInputEvents` | Log mouse button numbers and scroll sources for diagnosis | `true` or `false` | `false` |
-| `gestureClickShortcut` | Action when the gesture button is clicked without dragging: a Dock action or a shortcut in the `buttonShortcuts` format | `missionControl`, `appExpose`, `showDesktop`, or e.g. `ctrl+up` | unset (the click is replayed) |
+| `gestureClickShortcut` | Action when the gesture button is clicked without dragging: a Dock action or a shortcut in the `buttonShortcuts` format | `missionControl`, `appExpose`, or e.g. `ctrl+up` | unset (the click is replayed) |
 | `buttonShortcuts` | Keyboard shortcut sent when an extra button is clicked | Dictionary of button number (string, `2`+) to shortcut, e.g. `5` → `ctrl+shift+cmd+4` | empty |
 
 Shortcuts are `+`-separated modifiers (`cmd`, `shift`, `ctrl`, `alt`/`opt`)
