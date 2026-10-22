@@ -59,6 +59,8 @@ missing from the file uses its default.
 | Setting | Meaning | Available values | Default |
 |---|---|---|---|
 | `gestureButton` | Mouse button that triggers gestures | `2` = middle; `3`, `4`, or another OS-reported extra button | `2` |
+| `gestureButtonByDevice` | Per-mouse override of `gestureButton`, keyed by the mouse's product name (shown as `device=` when `logInputEvents` is on) | Dictionary of name to button number, e.g. `MX Master 3S` → `5`, `MX Master 4` → `6` | empty |
+| `buttonShortcutsByDevice` | Per-mouse `buttonShortcuts`, keyed by product name; a listed mouse uses only its own table | Dictionary of name to `buttonShortcuts`-style dictionary | empty |
 | `reverseMouseScroll` | Reverse scroll wheel direction | `true` or `false` | `false` |
 | `reverseTrackpadScroll` | Reverse trackpad (and Magic Mouse) scroll direction | `true` or `false` | `false` |
 | `axisThreshold` | Movement before the gesture axis locks, in pixels | Positive number | `8.0` |
@@ -82,11 +84,32 @@ gestures. For example, region screenshot to clipboard on the thumb button:
 The middle button is the default gesture button and the main use case. With
 Logi Options+ not remapping them, MX Master 4 buttons report as: left `0`,
 right `1`, wheel click `2`, back `3`, forward `4`, thumb button `5`, gesture
-button `6`. While Logi Options+ runs it consumes the gesture button (even
+button `6`. MX Master 3S has no separate thumb button number: its gesture
+button reports as `5`. While Logi Options+ runs it consumes the gesture button (even
 when set to "Do nothing") and any button with an Options+ action, so they never
 reach MightyMouse. To use the gesture button, quit Options+ and set
 `gestureButton` to `6`; use `buttonShortcuts` to replace Options+ button actions.
 Left/right (`0`/`1`) aren't supported as gesture triggers.
+
+Using both mice on one computer: set the per-device options, keyed by the product
+names MightyMouse logs as `device=` (with `logInputEvents` on):
+
+```xml
+<key>gestureButtonByDevice</key>
+<dict>
+  <key>MX Master 4</key><integer>6</integer>
+  <key>MX Master 3S</key><integer>5</integer>
+</dict>
+<key>buttonShortcutsByDevice</key>
+<dict>
+  <key>MX Master 4</key>
+  <dict><key>5</key><string>ctrl+shift+cmd+4</string></dict>
+  <key>MX Master 3S</key>
+  <dict/>
+</dict>
+```
+
+The mouse is identified by whichever device pressed a button last.
 
 To stop Options+ (until the next login), quit its app and run:
 

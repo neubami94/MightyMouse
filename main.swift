@@ -1,11 +1,13 @@
 import Cocoa
 import CoreGraphics
+import IOKit.hid
 
 // Middle-button drag -> smooth Space / Mission Control switching.
 // Synthesizes macOS's private "dock swipe" gesture events (pre-macOS 27 CGEventField path).
 
 struct GlobalConfig: Codable {
     var gestureButton: Int64 = 2
+    var gestureButtonByDevice: [String: Int64] = [:]   // e.g. "MX Master 3S": 5
     var reverseMouseScroll = false
     var reverseTrackpadScroll = false
     var axisThreshold: Double = 8.0
@@ -14,11 +16,13 @@ struct GlobalConfig: Codable {
     var scaleH: Double = 1.0 / (Double(NSScreen.main?.frame.width ?? 1440) + 100.0)
     var logInputEvents = false
     var buttonShortcuts: [String: String] = [:]   // e.g. "5": "ctrl+shift+cmd+4"
+    var buttonShortcutsByDevice: [String: [String: String]] = [:]   // overrides buttonShortcuts per mouse name
     var shortcuts: [Int64: Shortcut] = [:]
+    var shortcutsByDevice: [String: [Int64: Shortcut]] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case gestureButton, reverseMouseScroll, reverseTrackpadScroll, axisThreshold
-        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts
+        case gestureButton, gestureButtonByDevice, reverseMouseScroll, reverseTrackpadScroll, axisThreshold
+        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts, buttonShortcutsByDevice
     }
 
     init() {}
@@ -27,6 +31,7 @@ struct GlobalConfig: Codable {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
         gestureButton = try values.decodeIfPresent(Int64.self, forKey: .gestureButton) ?? gestureButton
+        gestureButtonByDevice = try values.decodeIfPresent([String: Int64].self, forKey: .gestureButtonByDevice) ?? gestureButtonByDevice
         reverseMouseScroll = try values.decodeIfPresent(Bool.self, forKey: .reverseMouseScroll) ?? reverseMouseScroll
         reverseTrackpadScroll = try values.decodeIfPresent(Bool.self, forKey: .reverseTrackpadScroll) ?? reverseTrackpadScroll
         axisThreshold = try values.decodeIfPresent(Double.self, forKey: .axisThreshold) ?? axisThreshold
@@ -35,14 +40,21 @@ struct GlobalConfig: Codable {
         scaleH = try values.decodeIfPresent(Double.self, forKey: .scaleH) ?? scaleH
         logInputEvents = try values.decodeIfPresent(Bool.self, forKey: .logInputEvents) ?? logInputEvents
         buttonShortcuts = try values.decodeIfPresent([String: String].self, forKey: .buttonShortcuts) ?? buttonShortcuts
-        for (button, text) in buttonShortcuts {
-            guard let number = Int64(button), number >= 2, let shortcut = Shortcut(text) else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
-                    debugDescription: "Invalid button shortcut \(button): \(text)"))
+        buttonShortcutsByDevice = try values.decodeIfPresent([String: [String: String]].self, forKey: .buttonShortcutsByDevice) ?? buttonShortcutsByDevice
+        func parse(_ table: [String: String]) throws -> [Int64: Shortcut] {
+            var result: [Int64: Shortcut] = [:]
+            for (button, text) in table {
+                guard let number = Int64(button), number >= 2, let shortcut = Shortcut(text) else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                        debugDescription: "Invalid button shortcut \(button): \(text)"))
+                }
+                result[number] = shortcut
             }
-            shortcuts[number] = shortcut
+            return result
         }
-        guard gestureButton >= 2, gestureButton <= Int64(UInt32.max),
+        shortcuts = try parse(buttonShortcuts)
+        shortcutsByDevice = try buttonShortcutsByDevice.mapValues(parse)
+        guard gestureButton >= 2, gestureButtonByDevice.values.allSatisfy({ $0 >= 2 && $0 <= Int64(UInt32.max) }), gestureButton <= Int64(UInt32.max),
               axisThreshold.isFinite, axisThreshold > 0,
               horizontalSign == -1 || horizontalSign == 1,
               verticalFireThreshold.isFinite, verticalFireThreshold > 0,
@@ -297,6 +309,37 @@ func isTrackpadScroll(_ event: CGEvent) -> Bool {
         event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0
 }
 
+// The tap's CGEvent carries no HID event for button clicks, so remember which mouse pressed a button last.
+var lastButtonDevice: String?
+let hidManager: IOHIDManager = {
+    let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+    IOHIDManagerSetDeviceMatching(manager, [kIOHIDPrimaryUsagePageKey: 1, kIOHIDPrimaryUsageKey: 2] as CFDictionary)
+    IOHIDManagerRegisterInputValueCallback(manager, { _, _, _, value in
+        let element = IOHIDValueGetElement(value)
+        guard IOHIDElementGetUsagePage(element) == kHIDPage_Button, IOHIDValueGetIntegerValue(value) != 0,
+              let name = IOHIDDeviceGetProperty(IOHIDElementGetDevice(element), kIOHIDProductKey as CFString) as? String
+        else { return }
+        lastButtonDevice = name
+    }, nil)
+    IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+    IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+    return manager
+}()
+
+func deviceName(of event: CGEvent) -> String? { lastButtonDevice }
+
+func gestureButton(for event: CGEvent) -> Int64 {
+    guard !globalConfig.gestureButtonByDevice.isEmpty, let name = deviceName(of: event) else { return gestureButton }
+    return globalConfig.gestureButtonByDevice[name] ?? gestureButton
+}
+
+func shortcut(for event: CGEvent) -> Shortcut? {
+    let number = event.getIntegerValueField(.mouseEventButtonNumber)
+    if !globalConfig.shortcutsByDevice.isEmpty, let name = deviceName(of: event),
+       let table = globalConfig.shortcutsByDevice[name] { return table[number] }
+    return globalConfig.shortcuts[number]
+}
+
 func logInputEvent(_ event: CGEvent) {
     guard globalConfig.logInputEvents else { return }
     if event.type == .scrollWheel {
@@ -309,7 +352,8 @@ func logInputEvent(_ event: CGEvent) {
               event.getIntegerValueField(.scrollWheelEventMomentumPhase),
               event.getIntegerValueField(.scrollWheelEventIsContinuous))
     } else {
-        NSLog("mightymouse: button=%lld", event.getIntegerValueField(.mouseEventButtonNumber))
+        NSLog("mightymouse: button=%lld device=%@", event.getIntegerValueField(.mouseEventButtonNumber),
+              deviceName(of: event) ?? "unknown")
     }
 }
 
@@ -367,11 +411,11 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     switch type {
     case .otherMouseDown:
         logInputEvent(event)
-        if let shortcut = globalConfig.shortcuts[event.getIntegerValueField(.mouseEventButtonNumber)] {
+        if let shortcut = shortcut(for: event) {
             shortcut.post()
             return nil
         }
-        let button = gestureButton
+        let button = gestureButton(for: event)
         if event.getIntegerValueField(.mouseEventButtonNumber) != button { return pass }
         active = true
         activeGestureButton = button
@@ -383,7 +427,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         return nil // swallow; re-synthesized later if it turns out to be a plain click
 
     case .otherMouseDragged:
-        if globalConfig.shortcuts[event.getIntegerValueField(.mouseEventButtonNumber)] != nil { return nil }
+        if shortcut(for: event) != nil { return nil }
         if !active || event.getIntegerValueField(.mouseEventButtonNumber) != activeGestureButton { return pass }
         let dx = event.getDoubleValueField(.mouseEventDeltaX)
         let dy = event.getDoubleValueField(.mouseEventDeltaY)
@@ -404,7 +448,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         return nil
 
     case .otherMouseUp:
-        if globalConfig.shortcuts[event.getIntegerValueField(.mouseEventButtonNumber)] != nil { return nil }
+        if shortcut(for: event) != nil { return nil }
         if !active || event.getIntegerValueField(.mouseEventButtonNumber) != activeGestureButton { return pass }
         active = false
         if began {
@@ -464,6 +508,7 @@ while eventTap == nil {
     eventTap = makeTap()
 }
 let tap = eventTap!
+_ = hidManager
 
 let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
