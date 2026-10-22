@@ -65,6 +65,8 @@ missing from the file uses its default.
 | `gestureButton` | Mouse button that triggers gestures | `2` = middle; `3`, `4`, or another OS-reported extra button | `2` |
 | `gestureButtonByDevice` | Per-mouse override of `gestureButton`, keyed by the mouse's product name (shown as `device=` when `logInputEvents` is on) | Dictionary of name to button number, e.g. `MX Master 3S` → `5`, `MX Master 4` → `6` | empty |
 | `buttonShortcutsByDevice` | Per-mouse `buttonShortcuts`, keyed by product name; a listed mouse uses only its own table | Dictionary of name to `buttonShortcuts`-style dictionary | empty |
+| `showMenuBarIcon` | Show the menu bar icon (mouse jiggler toggle, Quit) | `true` or `false` | `true` |
+| `jiggleSeconds` | Mouse jiggler interval: while "Mouse jiggler" is checked in the menu bar icon (off at launch; needs `showMenuBarIcon`), nudge the pointer 1 px and back after this many idle seconds, keeping the Mac awake | Positive number | `30` |
 | `reverseMouseScroll` | Reverse scroll wheel direction | `true` or `false` | `false` |
 | `reverseTrackpadScroll` | Reverse trackpad (and Magic Mouse) scroll direction | `true` or `false` | `false` |
 | `axisThreshold` | Movement before the gesture axis locks, in pixels | Positive number | `8.0` |

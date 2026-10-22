@@ -15,6 +15,8 @@ struct GlobalConfig: Codable {
     var verticalFireThreshold: Double = 30.0
     var scaleH: Double = 1.0 / (Double(NSScreen.main?.frame.width ?? 1440) + 100.0)
     var logInputEvents = false
+    var showMenuBarIcon = true
+    var jiggleSeconds: Double = 30   // idle seconds before a nudge; toggled from the menu bar icon
     var buttonShortcuts: [String: String] = [:]   // e.g. "5": "ctrl+shift+cmd+4"
     var buttonShortcutsByDevice: [String: [String: String]] = [:]   // overrides buttonShortcuts per mouse name
     var shortcuts: [Int64: Shortcut] = [:]
@@ -22,7 +24,7 @@ struct GlobalConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case gestureButton, gestureButtonByDevice, reverseMouseScroll, reverseTrackpadScroll, axisThreshold
-        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts, buttonShortcutsByDevice
+        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts, buttonShortcutsByDevice, jiggleSeconds, showMenuBarIcon
     }
 
     init() {}
@@ -40,6 +42,8 @@ struct GlobalConfig: Codable {
         scaleH = try values.decodeIfPresent(Double.self, forKey: .scaleH) ?? scaleH
         logInputEvents = try values.decodeIfPresent(Bool.self, forKey: .logInputEvents) ?? logInputEvents
         buttonShortcuts = try values.decodeIfPresent([String: String].self, forKey: .buttonShortcuts) ?? buttonShortcuts
+        showMenuBarIcon = try values.decodeIfPresent(Bool.self, forKey: .showMenuBarIcon) ?? showMenuBarIcon
+        jiggleSeconds = try values.decodeIfPresent(Double.self, forKey: .jiggleSeconds) ?? jiggleSeconds
         buttonShortcutsByDevice = try values.decodeIfPresent([String: [String: String]].self, forKey: .buttonShortcutsByDevice) ?? buttonShortcutsByDevice
         func parse(_ table: [String: String]) throws -> [Int64: Shortcut] {
             var result: [Int64: Shortcut] = [:]
@@ -54,6 +58,9 @@ struct GlobalConfig: Codable {
         }
         shortcuts = try parse(buttonShortcuts)
         shortcutsByDevice = try buttonShortcutsByDevice.mapValues(parse)
+        guard jiggleSeconds.isFinite, jiggleSeconds > 0 else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid jiggleSeconds"))
+        }
         guard gestureButton >= 2, gestureButtonByDevice.values.allSatisfy({ $0 >= 2 && $0 <= Int64(UInt32.max) }), gestureButton <= Int64(UInt32.max),
               axisThreshold.isFinite, axisThreshold > 0,
               horizontalSign == -1 || horizontalSign == 1,
@@ -512,10 +519,41 @@ _ = hidManager
 
 let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+var jiggling = false
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+final class JiggleToggle: NSObject {
+    @objc func toggle(_ item: NSMenuItem) {
+        jiggling.toggle()
+        item.state = jiggling ? .on : .off
+        statusItem.button?.appearsDisabled = !jiggling
+    }
+}
+let jiggleToggle = JiggleToggle()
+statusItem.button?.image = NSImage(systemSymbolName: "computermouse", accessibilityDescription: "MightyMouse")
+statusItem.button?.appearsDisabled = true
+let statusMenu = NSMenu()
+let jiggleItem = NSMenuItem(title: "Mouse jiggler", action: #selector(JiggleToggle.toggle(_:)), keyEquivalent: "")
+jiggleItem.target = jiggleToggle
+statusMenu.addItem(jiggleItem)
+statusMenu.addItem(.separator())
+statusMenu.addItem(withTitle: "Quit MightyMouse", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+statusItem.menu = statusMenu
+
 let configReloadTimer = Timer(timeInterval: 1.0, repeats: true) { _ in
     reloadConfig()
+    statusItem.isVisible = globalConfig.showMenuBarIcon
+    // Mouse jiggler: after N idle seconds nudge the pointer 1px and back.
+    let n = globalConfig.jiggleSeconds
+    if jiggling, CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!) >= n,
+       let here = CGEvent(source: nil)?.location {
+        for dx in [1.0, 0.0] {
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: here.x + dx, y: here.y), mouseButton: .left)?.post(tap: .cghidEventTap)
+        }
+    }
 }
 RunLoop.main.add(configReloadTimer, forMode: .common)
 CGEvent.tapEnable(tap: tap, enable: true)
 NSLog("mightymouse: running (button=\(gestureButton), screen=\(screenWidth)x\(screenHeight))")
-CFRunLoopRun()
+app.run()
