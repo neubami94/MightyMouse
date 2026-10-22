@@ -5,6 +5,15 @@ import IOKit.hid
 // Middle-button drag -> smooth Space / Mission Control switching.
 // Synthesizes macOS's private "dock swipe" gesture events (pre-macOS 27 CGEventField path).
 
+let dockActions = ["missioncontrol": "com.apple.expose.awake", "appexpose": "com.apple.expose.front.awake",
+                   "showdesktop": "com.apple.showdesktop.awake"]
+
+func untilComponents(_ text: String) -> DateComponents? {
+    let parts = text.split(separator: ":").compactMap { Int($0) }
+    guard parts.count == 2, (0..<24).contains(parts[0]), (0..<60).contains(parts[1]) else { return nil }
+    return DateComponents(hour: parts[0], minute: parts[1])
+}
+
 struct GlobalConfig: Codable {
     var gestureButton: Int64 = 2
     var gestureButtonByDevice: [String: Int64] = [:]   // e.g. "MX Master 3S": 5
@@ -16,6 +25,8 @@ struct GlobalConfig: Codable {
     var scaleH: Double = 1.0 / (Double(NSScreen.main?.frame.width ?? 1440) + 100.0)
     var logInputEvents = false
     var showMenuBarIcon = true
+    var gestureClickShortcut: String?   // sent on a gesture button click without drag; default replays the click
+    var jiggleUntil: String?   // "HH:mm"; the jiggler switches itself off at the next such time
     var jiggleSeconds: Double = 30   // idle seconds before a nudge; toggled from the menu bar icon
     var buttonShortcuts: [String: String] = [:]   // e.g. "5": "ctrl+shift+cmd+4"
     var buttonShortcutsByDevice: [String: [String: String]] = [:]   // overrides buttonShortcuts per mouse name
@@ -24,7 +35,7 @@ struct GlobalConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case gestureButton, gestureButtonByDevice, reverseMouseScroll, reverseTrackpadScroll, axisThreshold
-        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts, buttonShortcutsByDevice, jiggleSeconds, showMenuBarIcon
+        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts, buttonShortcutsByDevice, jiggleSeconds, jiggleUntil, showMenuBarIcon, gestureClickShortcut
     }
 
     init() {}
@@ -43,6 +54,11 @@ struct GlobalConfig: Codable {
         logInputEvents = try values.decodeIfPresent(Bool.self, forKey: .logInputEvents) ?? logInputEvents
         buttonShortcuts = try values.decodeIfPresent([String: String].self, forKey: .buttonShortcuts) ?? buttonShortcuts
         showMenuBarIcon = try values.decodeIfPresent(Bool.self, forKey: .showMenuBarIcon) ?? showMenuBarIcon
+        gestureClickShortcut = try values.decodeIfPresent(String.self, forKey: .gestureClickShortcut)
+        if let text = gestureClickShortcut, dockActions[text.lowercased()] == nil, Shortcut(text) == nil {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid gestureClickShortcut: \(text)"))
+        }
+        jiggleUntil = try values.decodeIfPresent(String.self, forKey: .jiggleUntil)
         jiggleSeconds = try values.decodeIfPresent(Double.self, forKey: .jiggleSeconds) ?? jiggleSeconds
         buttonShortcutsByDevice = try values.decodeIfPresent([String: [String: String]].self, forKey: .buttonShortcutsByDevice) ?? buttonShortcutsByDevice
         func parse(_ table: [String: String]) throws -> [Int64: Shortcut] {
@@ -58,6 +74,9 @@ struct GlobalConfig: Codable {
         }
         shortcuts = try parse(buttonShortcuts)
         shortcutsByDevice = try buttonShortcutsByDevice.mapValues(parse)
+        if let until = jiggleUntil, untilComponents(until) == nil {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid jiggleUntil, expected HH:mm"))
+        }
         guard jiggleSeconds.isFinite, jiggleSeconds > 0 else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid jiggleSeconds"))
         }
@@ -104,7 +123,8 @@ struct Shortcut {
         let src = CGEventSource(stateID: .hidSystemState)
         for down in [true, false] {
             let event = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: down)
-            event?.flags = flags
+            // arrow keys carry the fn flag; without it Mission Control shortcuts like ctrl+up are ignored
+            event?.flags = (123...126).contains(code) ? flags.union(.maskSecondaryFn) : flags
             event?.post(tap: .cghidEventTap)
         }
     }
@@ -469,6 +489,10 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
             began = false
             return nil
         } else {
+            if let text = globalConfig.gestureClickShortcut {
+                if let note = dockActions[text.lowercased()] { triggerDock(note) } else { Shortcut(text)?.post() }
+                return nil
+            }
             // no drag -> replay the configured button click
             let number = UInt32(event.getIntegerValueField(.mouseEventButtonNumber))
             synthesizeOtherClick(at: event.location, button: CGMouseButton(rawValue: number) ?? .center)
@@ -520,14 +544,23 @@ _ = hidManager
 let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
 var jiggling = false
+var jiggleDeadline: Date?
+func setJiggling(_ on: Bool, for hours: Double? = nil) {
+    jiggling = on
+    jiggleDeadline = !on ? nil : hours.map { Date().addingTimeInterval($0 * 3600) } ??
+        globalConfig.jiggleUntil.flatMap(untilComponents).flatMap {
+            Calendar.current.nextDate(after: Date(), matching: $0, matchingPolicy: .nextTime)
+        }
+    jiggleItem.state = on ? .on : .off
+    statusItem.button?.appearsDisabled = !on
+}
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 final class JiggleToggle: NSObject {
+    @objc func timed(_ item: NSMenuItem) { setJiggling(true, for: Double(item.tag)) }
     @objc func toggle(_ item: NSMenuItem) {
-        jiggling.toggle()
-        item.state = jiggling ? .on : .off
-        statusItem.button?.appearsDisabled = !jiggling
+        setJiggling(!jiggling)
     }
 }
 let jiggleToggle = JiggleToggle()
@@ -537,6 +570,12 @@ let statusMenu = NSMenu()
 let jiggleItem = NSMenuItem(title: "Mouse jiggler", action: #selector(JiggleToggle.toggle(_:)), keyEquivalent: "")
 jiggleItem.target = jiggleToggle
 statusMenu.addItem(jiggleItem)
+for hours in [1, 2, 4, 8] {
+    let item = NSMenuItem(title: "Jiggle for \(hours) h", action: #selector(JiggleToggle.timed(_:)), keyEquivalent: "")
+    item.target = jiggleToggle
+    item.tag = hours
+    statusMenu.addItem(item)
+}
 statusMenu.addItem(.separator())
 statusMenu.addItem(withTitle: "Quit MightyMouse", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 statusItem.menu = statusMenu
@@ -544,6 +583,7 @@ statusItem.menu = statusMenu
 let configReloadTimer = Timer(timeInterval: 1.0, repeats: true) { _ in
     reloadConfig()
     statusItem.isVisible = globalConfig.showMenuBarIcon
+    if let deadline = jiggleDeadline, Date() >= deadline { setJiggling(false) }
     // Mouse jiggler: after N idle seconds nudge the pointer 1px and back.
     let n = globalConfig.jiggleSeconds
     if jiggling, CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!) >= n,
