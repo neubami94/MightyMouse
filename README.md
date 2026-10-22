@@ -8,11 +8,14 @@ Hold the **middle button and drag**:
 | Drag left / right | Smooth switch between Spaces (desktops) |
 | Drag up | Mission Control |
 | Drag down | App Exposé (windows of the current app) |
-| Plain middle click | Passes through unchanged |
+| Plain click | Replayed as a normal click |
 
 It synthesizes macOS's private "dock swipe" gesture events for the smooth
 horizontal Space animation, and uses the private `CoreDockSendNotification` for the
 vertical actions (which macOS 26 "Tahoe" no longer triggers via dock swipes).
+
+It can also reverse mouse and trackpad scrolling independently and send a
+keyboard shortcut when an extra mouse button is clicked (see [Tunables](#tunables)).
 
 > 🎬 [See MightyMouse in action](https://www.youtube.com/watch?v=dQw4w9WgXcQ) before you install.
 
@@ -45,15 +48,65 @@ tail -f mightymouse.log       # runtime log
 
 ## Tunables
 
-Edit the constants at the top of `main.swift`:
+MightyMouse automatically creates
+`~/Library/Application Support/MightyMouse/config.plist` from the defaults below.
+Changes apply within about one second of **saving** the file (unsaved editor
+changes have no effect); no rebuild or restart is needed. `mightymouse.log`
+reports `reloaded config` on success. An invalid or temporarily missing file
+keeps the previous settings and reports `couldn't reload config`. A setting
+missing from the file uses its default.
 
-| Constant | Meaning |
-|---|---|
-| `gestureButton` | Mouse button that triggers gestures (2 = middle) |
-| `axisThreshold` | Pixels of movement before the gesture axis locks |
-| `horizontalSign` | Flip if left/right feels reversed |
-| `verticalFireThreshold` | Pixels of vertical drag before up/down fires |
-| `scaleH` | Horizontal sensitivity of the Space animation |
+| Setting | Meaning | Available values | Default |
+|---|---|---|---|
+| `gestureButton` | Mouse button that triggers gestures | `2` = middle; `3`, `4`, or another OS-reported extra button | `2` |
+| `reverseMouseScroll` | Reverse scroll wheel direction | `true` or `false` | `false` |
+| `reverseTrackpadScroll` | Reverse trackpad (and Magic Mouse) scroll direction | `true` or `false` | `false` |
+| `axisThreshold` | Movement before the gesture axis locks, in pixels | Positive number | `8.0` |
+| `horizontalSign` | Horizontal gesture direction | `-1.0` or `1.0` | `-1.0` |
+| `verticalFireThreshold` | Vertical drag before up/down fires, in pixels | Positive number | `30.0` |
+| `scaleH` | Horizontal sensitivity of the Space animation | Positive number | `1.0 / (screenWidth + 100.0)` |
+| `logInputEvents` | Log mouse button numbers and scroll sources for diagnosis | `true` or `false` | `false` |
+| `buttonShortcuts` | Keyboard shortcut sent when an extra button is clicked | Dictionary of button number (string, `2`+) to shortcut, e.g. `5` → `ctrl+shift+cmd+4` | empty |
+
+Shortcuts are `+`-separated modifiers (`cmd`, `shift`, `ctrl`, `alt`/`opt`)
+followed by one key: a letter, digit, punctuation key, `return`, `tab`,
+`space`, `delete`, `escape`, or an arrow (`left`, `right`, `up`, `down`).
+Keys use US-layout positions. A mapped button no longer clicks or triggers
+gestures. For example, region screenshot to clipboard on the thumb button:
+
+```xml
+<key>buttonShortcuts</key>
+<dict><key>5</key><string>ctrl+shift+cmd+4</string></dict>
+```
+
+The middle button is the default gesture button and the main use case. With
+Logi Options+ not remapping them, MX Master 4 buttons report as: left `0`,
+right `1`, wheel click `2`, back `3`, forward `4`, thumb button `5`, gesture
+button `6`. While Logi Options+ runs it consumes the gesture button (even
+when set to "Do nothing") and any button with an Options+ action, so they never
+reach MightyMouse. To use the gesture button, quit Options+ and set
+`gestureButton` to `6`; use `buttonShortcuts` to replace Options+ button actions.
+Left/right (`0`/`1`) aren't supported as gesture triggers.
+
+To stop Options+ (until the next login), quit its app and run:
+
+```bash
+launchctl bootout gui/$(id -u) /Library/LaunchAgents/com.logi.optionsplus.plist
+# start it again:
+launchctl bootstrap gui/$(id -u) /Library/LaunchAgents/com.logi.optionsplus.plist
+```
+
+Without Options+, the mouse uses macOS's own pointer and scroll settings.
+Don't run another scroll reverser alongside
+`reverseMouseScroll`; two reversals cancel out.
+
+Scrolls with a gesture or momentum phase (trackpad, Magic Mouse) count as
+trackpad scrolls; everything else, including Logi Options+ smooth scrolling,
+counts as mouse scrolls.
+
+With `logInputEvents` enabled, `mightymouse.log` records button numbers and
+how each scroll was classified (at most one scroll message per second). It
+doesn't record keyboard input. Disable it after testing.
 
 ## Files
 
@@ -62,6 +115,7 @@ Edit the constants at the top of `main.swift`:
 - `setup-cert.sh` — create the self-signed signing certificate
 - `install.sh` — install/load the login LaunchAgent
 - `Info.plist` — app bundle metadata (stable `CFBundleIdentifier` for TCC)
+- `tests/test-config-reload.py` — config parsing and live reload check (`python3 tests/test-config-reload.py`)
 
 ## Uninstall
 
