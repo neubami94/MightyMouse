@@ -649,7 +649,11 @@ final class MenuActions: NSObject {
     @objc func timed(_ item: NSMenuItem) { setJiggling(true, for: Double(item.tag)) }
     @objc func jiggleOn(_ item: NSMenuItem) { setJiggling(true) }
     @objc func jiggleOff(_ item: NSMenuItem) { setJiggling(false) }
-    @objc func openConfig(_ item: NSMenuItem) { NSWorkspace.shared.open(globalConfigURL) }
+    @objc func openConfig(_ item: NSMenuItem) {
+        let ws = NSWorkspace.shared
+        guard let textEdit = ws.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") else { ws.open(globalConfigURL); return }
+        ws.open([globalConfigURL], withApplicationAt: textEdit, configuration: NSWorkspace.OpenConfiguration())
+    }
     @objc func update(_ item: NSMenuItem) { checkForUpdates() }
 }
 let actions = MenuActions()
