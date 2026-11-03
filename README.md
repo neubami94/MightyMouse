@@ -65,9 +65,10 @@ missing from the file uses its default.
 | `gestureButton` | Mouse button that triggers gestures | `2` = middle; `3`, `4`, or another OS-reported extra button | `2` |
 | `gestureButtonByDevice` | Per-mouse override of `gestureButton`, keyed by the mouse's product name (shown as `device=` when `logInputEvents` is on) | Dictionary of name to button number, e.g. `MX Master 3S` → `5`, `MX Master 4` → `6` | empty |
 | `buttonShortcutsByDevice` | Per-mouse `buttonShortcuts`, keyed by product name; a listed mouse uses only its own table | Dictionary of name to `buttonShortcuts`-style dictionary | empty |
-| `showMenuBarIcon` | Show the menu bar icon (mouse jiggler toggle, Quit) | `true` or `false` | `true` |
-| `jiggleUntil` | Used by the plain "Mouse jiggler" menu item (the "Jiggle for N h" items use their own duration). Time of day (`HH:mm`, 24 h) when the jiggler switches itself off, so the Mac can sleep afterwards; the next such time after you enable it | e.g. `16:00` | unset (jiggles until switched off) |
-| `jiggleSeconds` | Mouse jiggler interval: while "Mouse jiggler" is checked in the menu bar icon (off at launch; needs `showMenuBarIcon`), nudge the pointer 1 px and back after this many idle seconds, keeping the Mac awake | Positive number | `30` |
+| `showMenuBarIcon` | Show the menu bar icon (mouse jiggler submenu, open config file, check for updates, Quit) | `true` or `false` | `true` |
+| `jiggleUntil` | Used by the jiggler's plain "On" menu item (the "On for N h" items use their own duration). Time of day (`HH:mm`, 24 h) when the jiggler switches itself off, so the Mac can sleep afterwards; the next such time after you enable it | e.g. `16:00` | unset (jiggles until switched off) |
+| `autoUpdate` | Every 6 h (and via the menu's "Check for updates") run `git pull --ff-only` + `build.sh` in the repo checkout and relaunch. Only fast-forwards; skipped if the pull or build fails | `true` or `false` | `false` |
+| `jiggleSeconds` | Mouse jiggler interval: while the "Mouse jiggler" submenu is on in the menu bar icon (off at launch; needs `showMenuBarIcon`), nudge the pointer 1 px and back after this many idle seconds, keeping the Mac awake | Positive number | `30` |
 | `reverseMouseScroll` | Reverse scroll wheel direction | `true` or `false` | `false` |
 | `reverseTrackpadScroll` | Reverse trackpad (and Magic Mouse) scroll direction | `true` or `false` | `false` |
 | `axisThreshold` | Movement before the gesture axis locks, in pixels | Positive number | `8.0` |

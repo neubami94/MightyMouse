@@ -6,6 +6,9 @@
 # macOS noise
 .DS_Store
 
+# IDE
+/.idea/
+
 # Local signing material (never commit private keys)
 *.p12
 *.key

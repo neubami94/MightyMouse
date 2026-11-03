@@ -27,6 +27,7 @@ struct GlobalConfig: Codable {
     var gestureClickShortcut: String?   // sent on a gesture button click without drag; default replays the click
     var jiggleUntil: String?   // "HH:mm"; the jiggler switches itself off at the next such time
     var jiggleSeconds: Double = 30   // idle seconds before a nudge; toggled from the menu bar icon
+    var autoUpdate = false   // pull + rebuild from the git checkout every few hours
     var buttonShortcuts: [String: String] = [:]   // e.g. "5": "ctrl+shift+cmd+4"
     var buttonShortcutsByDevice: [String: [String: String]] = [:]   // overrides buttonShortcuts per mouse name
     var shortcuts: [Int64: Shortcut] = [:]
@@ -34,7 +35,7 @@ struct GlobalConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case gestureButton, gestureButtonByDevice, reverseMouseScroll, reverseTrackpadScroll, axisThreshold
-        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts, buttonShortcutsByDevice, jiggleSeconds, jiggleUntil, showMenuBarIcon, gestureClickShortcut
+        case horizontalSign, verticalFireThreshold, scaleH, logInputEvents, buttonShortcuts, buttonShortcutsByDevice, jiggleSeconds, jiggleUntil, showMenuBarIcon, gestureClickShortcut, autoUpdate
     }
 
     init() {}
@@ -59,6 +60,7 @@ struct GlobalConfig: Codable {
         }
         jiggleUntil = try values.decodeIfPresent(String.self, forKey: .jiggleUntil)
         jiggleSeconds = try values.decodeIfPresent(Double.self, forKey: .jiggleSeconds) ?? jiggleSeconds
+        autoUpdate = try values.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? autoUpdate
         buttonShortcutsByDevice = try values.decodeIfPresent([String: [String: String]].self, forKey: .buttonShortcutsByDevice) ?? buttonShortcutsByDevice
         func parse(_ table: [String: String]) throws -> [Int64: Shortcut] {
             var result: [Int64: Shortcut] = [:]
@@ -235,6 +237,48 @@ func weirdType(_ type: Int) -> Double {
     return Double(Float(bitPattern: UInt32(type)))
 }
 
+// macOS 27 ignores the CGEvent fields; the dock swipe must be an IOHIDEvent attached to a type 30 event.
+// Built via private HID.framework (HIDEvent) and SkyLight (SLEventSetIOHIDEvent).
+let hidEventClass: AnyClass? = {
+    dlopen("/System/Library/PrivateFrameworks/HID.framework/HID", RTLD_NOW)
+    dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW)
+    return NSClassFromString("HIDEvent")
+}()
+let objcMsgSend = dlsym(dlopen(nil, RTLD_NOW), "objc_msgSend")
+typealias SLSetHIDEvent = @convention(c) (CGEvent, UnsafeRawPointer) -> Void
+let slSetHIDEvent: SLSetHIDEvent? = dlsym(dlopen(nil, RTLD_NOW), "SLEventSetIOHIDEvent").map { unsafeBitCast($0, to: SLSetHIDEvent.self) }
+
+func hidDockSwipe(phase: Int, type: Int, progress: Double, exitSpeed: Double) -> CGEvent? {
+    typealias New = @convention(c) (AnyObject, Selector, UInt32, UInt64, UInt64) -> AnyObject
+    typealias SetOptions = @convention(c) (AnyObject, Selector, UInt32) -> Void
+    typealias SetInt = @convention(c) (AnyObject, Selector, Int, UInt32) -> Void
+    typealias SetDouble = @convention(c) (AnyObject, Selector, Double, UInt32) -> Void
+    typealias Append = @convention(c) (AnyObject, Selector, AnyObject) -> Void
+    guard let cls = hidEventClass, let send = objcMsgSend, let slSet = slSetHIDEvent,
+          let alloc = (cls as AnyObject).perform(Selector(("alloc")))?.takeUnretainedValue() else { return nil }
+    func make(_ t: UInt32, _ obj: AnyObject) -> AnyObject {
+        unsafeBitCast(send, to: New.self)(obj, Selector(("initWithType:timestamp:senderID:")), t, 0, 0)
+    }
+    let hid = make(23, alloc)  // kIOHIDEventTypeDockSwipe
+    unsafeBitCast(send, to: SetOptions.self)(hid, Selector(("setOptions:")), UInt32(phase) << 24)
+    unsafeBitCast(send, to: SetInt.self)(hid, Selector(("setIntegerValue:forField:")), type, 1507329)  // motion
+    unsafeBitCast(send, to: SetInt.self)(hid, Selector(("setIntegerValue:forField:")), 3, 1507333)     // flavor: dock primary
+    unsafeBitCast(send, to: SetDouble.self)(hid, Selector(("setDoubleValue:forField:")), progress, 1507330)
+    if phase == phaseEnded || phase == phaseCancelled,
+       let childAlloc = (cls as AnyObject).perform(Selector(("alloc")))?.takeUnretainedValue() {
+        let child = make(9, childAlloc)  // kIOHIDEventTypeVelocity
+        let setD = unsafeBitCast(send, to: SetDouble.self)
+        setD(child, Selector(("setDoubleValue:forField:")), exitSpeed, 589824)
+        setD(child, Selector(("setDoubleValue:forField:")), exitSpeed, 589825)
+        setD(child, Selector(("setDoubleValue:forField:")), 0, 589826)
+        unsafeBitCast(send, to: Append.self)(hid, Selector(("appendEvent:")), child)
+    }
+    guard let e = CGEvent(source: nil) else { return nil }
+    e.type = CGEventType(rawValue: 30)!
+    slSet(e, UnsafeRawPointer(Unmanaged.passUnretained(hid).toOpaque()))
+    return e
+}
+
 func postDockSwipe(delta d: Double, type: Int, phase phaseIn: Int) {
     var phase = phaseIn
     if phase == phaseBegan {
@@ -257,12 +301,12 @@ func postDockSwipe(delta d: Double, type: Int, phase phaseIn: Int) {
     let wt = weirdType(type)
 
     // type 29 (NSEventTypeGesture)
-    let e29 = CGEvent(source: nil)
+    var e29 = CGEvent(source: nil)
     e29?.setDoubleValueField(CGEventField(rawValue: 55)!, value: 29)
     e29?.setDoubleValueField(CGEventField(rawValue: 41)!, value: 33231)
 
     // type 30 carrying the dock swipe payload
-    let e30 = CGEvent(source: nil)
+    var e30 = CGEvent(source: nil)
     e30?.setDoubleValueField(CGEventField(rawValue: 55)!, value: 30)
     e30?.setDoubleValueField(CGEventField(rawValue: 110)!, value: Double(kDockSwipe))
     e30?.setDoubleValueField(CGEventField(rawValue: 132)!, value: Double(phase))
@@ -278,6 +322,11 @@ func postDockSwipe(delta d: Double, type: Int, phase phaseIn: Int) {
     if phase == phaseEnded || phase == phaseCancelled {
         e30?.setDoubleValueField(CGEventField(rawValue: 129)!, value: exitSpeed)
         e30?.setDoubleValueField(CGEventField(rawValue: 130)!, value: exitSpeed)
+    }
+
+    if #available(macOS 27, *) {
+        e29 = nil
+        e30 = hidDockSwipe(phase: phase, type: type, progress: -originOffset, exitSpeed: -exitSpeed)
     }
 
     e30?.post(tap: .cgSessionEventTap)
@@ -314,7 +363,8 @@ func synthesizeOtherClick(at p: CGPoint, button: CGMouseButton) {
 // Trigger them via the private CoreDockSendNotification, which ignores keyboard-shortcut settings.
 typealias CoreDockSendNotificationFn = @convention(c) (CFString, UnsafeMutableRawPointer?) -> Void
 let coreDockSend: CoreDockSendNotificationFn? = {
-    guard let sym = dlsym(dlopen(nil, RTLD_NOW), "CoreDockSendNotification") else { return nil }
+    dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_NOW)
+    guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CoreDockSendNotification") else { return nil }
     return unsafeBitCast(sym, to: CoreDockSendNotificationFn.self)
 }()
 
@@ -482,6 +532,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
                 postDockSwipe(delta: 0.0, type: kTypeHorizontal, phase: phaseEnded)
             } else if axis == 2 {
                 if abs(sumY) >= verticalFireThreshold {
+                    NSLog("mightymouse: vertical gesture sumY=%.1f front=%@", sumY, NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")
                     triggerDock(sumY < 0 ? missionControlNote : appExposeNote)
                 }
             }
@@ -551,37 +602,92 @@ func setJiggling(_ on: Bool, for hours: Double? = nil) {
             Calendar.current.nextDate(after: Date(), matching: $0, matchingPolicy: .nextTime)
         }
     jiggleItem.state = on ? .on : .off
+    jiggleOnItem.state = on ? .on : .off
+    jiggleOffItem.state = on ? .off : .on
     statusItem.button?.appearsDisabled = !on
 }
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-final class JiggleToggle: NSObject {
-    @objc func timed(_ item: NSMenuItem) { setJiggling(true, for: Double(item.tag)) }
-    @objc func toggle(_ item: NSMenuItem) {
-        setJiggling(!jiggling)
+
+// The app lives at <repo>/MightyMouse.app/Contents/MacOS/MightyMouse; update = git pull + build.sh, then launchd (KeepAlive) relaunches us.
+func runTool(_ args: [String], in dir: String) -> (ok: Bool, out: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: args[0])
+    p.arguments = Array(args.dropFirst())
+    p.currentDirectoryURL = URL(fileURLWithPath: dir)
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = pipe
+    do { try p.run() } catch { return (false, "\(error)") }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return (p.terminationStatus == 0, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+}
+var updating = false
+func checkForUpdates() {
+    if updating { return }
+    updating = true
+    let repo = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path
+    DispatchQueue.global().async {
+        defer { updating = false }
+        let git = "/usr/bin/git"
+        guard runTool([git, "fetch", "--quiet"], in: repo).ok else { return NSLog("mightymouse: update: git fetch failed") }
+        let behind = runTool([git, "rev-list", "--count", "HEAD..@{u}"], in: repo)
+        guard behind.ok, let n = Int(behind.out), n > 0 else { return NSLog("mightymouse: update: up to date") }
+        let pull = runTool([git, "pull", "--ff-only", "--quiet"], in: repo)
+        guard pull.ok else { return NSLog("mightymouse: update: pull failed: %@", pull.out) }
+        let build = runTool(["/bin/bash", "build.sh"], in: repo)
+        guard build.ok else { return NSLog("mightymouse: update: build failed: %@", build.out) }
+        NSLog("mightymouse: updated (%d commits), restarting", n)
+        exit(0)
     }
 }
-let jiggleToggle = JiggleToggle()
+
+final class MenuActions: NSObject {
+    @objc func timed(_ item: NSMenuItem) { setJiggling(true, for: Double(item.tag)) }
+    @objc func jiggleOn(_ item: NSMenuItem) { setJiggling(true) }
+    @objc func jiggleOff(_ item: NSMenuItem) { setJiggling(false) }
+    @objc func openConfig(_ item: NSMenuItem) { NSWorkspace.shared.open(globalConfigURL) }
+    @objc func update(_ item: NSMenuItem) { checkForUpdates() }
+}
+let actions = MenuActions()
 statusItem.button?.image = NSImage(systemSymbolName: "computermouse", accessibilityDescription: "MightyMouse")
 statusItem.button?.appearsDisabled = true
-let statusMenu = NSMenu()
-let jiggleItem = NSMenuItem(title: "Mouse jiggler", action: #selector(JiggleToggle.toggle(_:)), keyEquivalent: "")
-jiggleItem.target = jiggleToggle
-statusMenu.addItem(jiggleItem)
-for hours in [1, 2, 4, 8] {
-    let item = NSMenuItem(title: "Jiggle for \(hours) h", action: #selector(JiggleToggle.timed(_:)), keyEquivalent: "")
-    item.target = jiggleToggle
-    item.tag = hours
-    statusMenu.addItem(item)
+func menuItem(_ title: String, _ action: Selector, tag: Int = 0) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    item.target = actions
+    item.tag = tag
+    return item
 }
+let statusMenu = NSMenu()
+let jiggleItem = NSMenuItem(title: "Mouse jiggler", action: nil, keyEquivalent: "")
+let jiggleMenu = NSMenu()
+let jiggleOnItem = menuItem("On", #selector(MenuActions.jiggleOn(_:)))
+let jiggleOffItem = menuItem("Off", #selector(MenuActions.jiggleOff(_:)))
+jiggleOffItem.state = .on
+jiggleMenu.addItem(jiggleOnItem)
+jiggleMenu.addItem(jiggleOffItem)
+jiggleMenu.addItem(.separator())
+for hours in [1, 2, 4, 8] { jiggleMenu.addItem(menuItem("On for \(hours) h", #selector(MenuActions.timed(_:)), tag: hours)) }
+jiggleItem.submenu = jiggleMenu
+statusMenu.addItem(jiggleItem)
+statusMenu.addItem(.separator())
+statusMenu.addItem(menuItem("Open config file", #selector(MenuActions.openConfig(_:))))
+statusMenu.addItem(menuItem("Check for updates", #selector(MenuActions.update(_:))))
 statusMenu.addItem(.separator())
 statusMenu.addItem(withTitle: "Quit MightyMouse", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 statusItem.menu = statusMenu
 
+var lastUpdateCheck = Date()
 let configReloadTimer = Timer(timeInterval: 1.0, repeats: true) { _ in
     reloadConfig()
     statusItem.isVisible = globalConfig.showMenuBarIcon
+    if globalConfig.autoUpdate, Date().timeIntervalSince(lastUpdateCheck) >= 6 * 3600 {
+        lastUpdateCheck = Date()
+        checkForUpdates()
+    }
     if let deadline = jiggleDeadline, Date() >= deadline { setJiggling(false) }
     // Mouse jiggler: after N idle seconds nudge the pointer 1px and back.
     let n = globalConfig.jiggleSeconds
